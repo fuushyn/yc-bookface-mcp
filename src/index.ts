@@ -129,9 +129,10 @@ server.tool(
     );
     if (!res.ok) return error(`Fetch history failed (${res.status})`);
     const data = await res.json();
-    const messages: unknown[] = Array.isArray(data)
+    const raw = Array.isArray(data)
       ? data
-      : (data as any).chat_messages ?? data;
+      : (data as any).chat_messages ?? (data as any).messages ?? [];
+    const messages: unknown[] = Array.isArray(raw) ? raw : [];
     const slice = messages.slice(-last_n);
     return ok(JSON.stringify(slice, null, 2));
   }
