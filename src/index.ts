@@ -57,11 +57,95 @@ server.tool(
   }
 );
 
+// ── create_chat_and_wait ──────────────────────────────────────────────────
+
+server.tool(
+  "create_chat_and_wait",
+  "Create a new Bookface agent chat thread, send an opening message, and poll until the agent replies. This is the PRIMARY tool for starting a new conversation when you need the response.",
+  {
+    message: z.string().describe("Opening message to send"),
+    timeout_seconds: z
+      .number()
+      .default(120)
+      .describe("Max seconds to wait for a reply (default 120)"),
+  },
+  async ({ message, timeout_seconds }) => {
+    // Create thread with message
+    const body: Record<string, unknown> = {
+      user_ids: [3241775],
+      name: "",
+      visibility: "private",
+      message: {
+        content: message,
+        media_uploads: [],
+        client_message_id: randomUUID(),
+        version_number: 2,
+      },
+    };
+
+    const createRes = await authedFetch(`${MESSAGES_BASE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ chat: body }),
+    });
+    if (!createRes.ok) {
+      const text = await createRes.text();
+      return error(`Failed to create thread (${createRes.status}): ${text}`);
+    }
+
+    const thread = await createRes.json();
+    const threadId = thread.id;
+
+    // Poll for agent reply
+    const deadline = Date.now() + timeout_seconds * 1000;
+    const pollInterval = 3000;
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+
+      const histRes = await authedFetch(
+        `${MESSAGES_BASE}/messages/${threadId}/chat_messages`
+      );
+      if (!histRes.ok) continue;
+
+      const histData = await histRes.json();
+      const msgs = Array.isArray(histData)
+        ? histData
+        : (histData as any).chat_messages ?? (histData as any).messages ?? [];
+      if (!Array.isArray(msgs)) continue;
+
+      // We sent 1 message, so need at least 2 (our msg + reply)
+      if (msgs.length >= 2) {
+        const reply = msgs[msgs.length - 1] as any;
+        return ok(
+          JSON.stringify(
+            {
+              thread_id: threadId,
+              reply: {
+                id: reply.id,
+                content: reply.content,
+                sender: reply.user?.full_name ?? reply.sender_name ?? "Agent",
+                created_at: reply.created_at,
+              },
+              total_messages: msgs.length,
+            },
+            null,
+            2
+          )
+        );
+      }
+    }
+
+    return error(
+      `Thread ${threadId} created and message sent, but no reply after ${timeout_seconds}s. Try get_chat_history on thread ${threadId} later.`
+    );
+  }
+);
+
 // ── send_message ────────────────────────────────────────────────────────────
 
 server.tool(
   "send_message",
-  "Send a message to an existing YC Bookface agent chat thread",
+  "Send a message to a Bookface chat thread WITHOUT waiting for a reply (fire-and-forget). IMPORTANT: If you need the agent's response, use send_and_wait instead — this tool does NOT return the reply.",
   {
     thread_id: z.number().describe("The thread/conversation ID"),
     message: z.string().describe("Message body"),
@@ -93,7 +177,7 @@ server.tool(
 
 server.tool(
   "send_and_wait",
-  "Send a message to a Bookface agent chat thread and wait for the agent's reply. Use this instead of send_message when you need the response.",
+  "Send a message to a Bookface agent chat thread and poll until the agent replies. This is the PRIMARY tool for chatting — always use this instead of send_message + get_chat_history.",
   {
     thread_id: z.number().describe("The thread/conversation ID"),
     message: z.string().describe("Message body"),
