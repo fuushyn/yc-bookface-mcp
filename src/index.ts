@@ -89,6 +89,100 @@ server.tool(
   }
 );
 
+// ── send_and_wait ─────────────────────────────────────────────────────────
+
+server.tool(
+  "send_and_wait",
+  "Send a message to a Bookface agent chat thread and wait for the agent's reply. Use this instead of send_message when you need the response.",
+  {
+    thread_id: z.number().describe("The thread/conversation ID"),
+    message: z.string().describe("Message body"),
+    timeout_seconds: z
+      .number()
+      .default(120)
+      .describe("Max seconds to wait for a reply (default 120)"),
+  },
+  async ({ thread_id, message, timeout_seconds }) => {
+    // Get current message count so we know what's new
+    const beforeRes = await authedFetch(
+      `${MESSAGES_BASE}/messages/${thread_id}/chat_messages`
+    );
+    let beforeCount = 0;
+    if (beforeRes.ok) {
+      const beforeData = await beforeRes.json();
+      const beforeMsgs = Array.isArray(beforeData)
+        ? beforeData
+        : (beforeData as any).chat_messages ?? (beforeData as any).messages ?? [];
+      beforeCount = Array.isArray(beforeMsgs) ? beforeMsgs.length : 0;
+    }
+
+    // Send the message
+    const sendRes = await authedFetch(
+      `${MESSAGES_BASE}/messages/${thread_id}/chat_messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          chat_message: {
+            chat_id: thread_id,
+            content: message,
+            media_uploads: [],
+            client_message_id: randomUUID(),
+            version_number: 2,
+            thread_id: null,
+            referrer: `${MESSAGES_BASE}/messages/${thread_id}`,
+          },
+        }),
+      }
+    );
+    if (!sendRes.ok) return error(`Send failed (${sendRes.status})`);
+
+    // Poll for a new message (agent reply)
+    const deadline = Date.now() + timeout_seconds * 1000;
+    const pollInterval = 3000; // 3 seconds
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+
+      const histRes = await authedFetch(
+        `${MESSAGES_BASE}/messages/${thread_id}/chat_messages`
+      );
+      if (!histRes.ok) continue;
+
+      const histData = await histRes.json();
+      const msgs = Array.isArray(histData)
+        ? histData
+        : (histData as any).chat_messages ?? (histData as any).messages ?? [];
+      if (!Array.isArray(msgs)) continue;
+
+      // Check if there are new messages beyond what we sent
+      // We sent 1 message, so we need at least beforeCount + 2 (our msg + reply)
+      if (msgs.length >= beforeCount + 2) {
+        const reply = msgs[msgs.length - 1] as any;
+        return ok(
+          JSON.stringify(
+            {
+              thread_id,
+              reply: {
+                id: reply.id,
+                content: reply.content,
+                sender: reply.user?.full_name ?? reply.sender_name ?? "Agent",
+                created_at: reply.created_at,
+              },
+              total_messages: msgs.length,
+            },
+            null,
+            2
+          )
+        );
+      }
+    }
+
+    return error(
+      `No reply received after ${timeout_seconds}s. The agent may still be generating — try get_chat_history on thread ${thread_id} later.`
+    );
+  }
+);
+
 // ── get_new_messages ────────────────────────────────────────────────────────
 
 server.tool(
