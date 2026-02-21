@@ -276,6 +276,223 @@ server.tool(
   }
 );
 
+// ── Algolia deals search ──────────────────────────────────────────────────
+
+const ALGOLIA_APP_ID = "45BWZJ1SGC";
+const ALGOLIA_URL = `https://${ALGOLIA_APP_ID.toLowerCase()}-dsn.algolia.net/1/indexes/*/queries?x-algolia-application-id=${ALGOLIA_APP_ID}`;
+
+let algoliaKeyCache: { key: string; ts: number } | null = null;
+
+/**
+ * Extract the Algolia secured API key from the Bookface deals page.
+ * The key is per-user and session-bound — it embeds user permissions as
+ * HMAC-restricted tagFilters so we must scrape it from the frontend.
+ */
+async function getAlgoliaKey(): Promise<string> {
+  // Cache for 25 minutes (keys typically last ~30 min)
+  if (algoliaKeyCache && Date.now() - algoliaKeyCache.ts < 25 * 60_000) {
+    return algoliaKeyCache.key;
+  }
+
+  const res = await authedFetch(`${BOOKFACE_BASE}/deals`, {
+    headers: { Referer: `${BOOKFACE_BASE}/deals` },
+  });
+  if (!res.ok) throw new Error(`Failed to load deals page (${res.status})`);
+  const body = await res.text();
+
+  let key: string | undefined;
+
+  // Try parsing as JSON (Rails may respond with JSON due to Accept header)
+  try {
+    const json = JSON.parse(body);
+    key =
+      deepGet(json, "algoliaApiKey") ??
+      deepGet(json, "algolia_api_key") ??
+      deepGet(json, "searchApiKey");
+  } catch {
+    // Not JSON — treat as HTML
+  }
+
+  // data-react-props attribute (HTML-entity encoded JSON)
+  if (!key) {
+    const m = body.match(/data-react-props="([^"]+)"/);
+    if (m) {
+      try {
+        const decoded = m[1]
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, "&")
+          .replace(/&#39;/g, "'");
+        const props = JSON.parse(decoded);
+        key =
+          deepGet(props, "algoliaApiKey") ??
+          deepGet(props, "algolia_api_key") ??
+          deepGet(props, "searchApiKey");
+      } catch {}
+    }
+  }
+
+  // Key assignment in script tags
+  if (!key) {
+    const m = body.match(
+      /["'](?:algolia[A-Za-z]*Key|apiKey|searchKey)["']\s*[=:]\s*["']([A-Za-z0-9+/=]{100,})["']/i
+    );
+    if (m) key = m[1];
+  }
+
+  // Last resort: very long base64 string (Algolia secured keys are 200+ chars)
+  if (!key) {
+    const m = body.match(/[A-Za-z0-9+/]{200,}={0,2}/);
+    if (m) key = m[0];
+  }
+
+  if (!key)
+    throw new Error(
+      "Could not extract Algolia API key from deals page — page format may have changed"
+    );
+
+  algoliaKeyCache = { key, ts: Date.now() };
+  return key;
+}
+
+function deepGet(obj: unknown, target: string): string | undefined {
+  if (!obj || typeof obj !== "object") return;
+  const rec = obj as Record<string, unknown>;
+  if (target in rec && typeof rec[target] === "string")
+    return rec[target] as string;
+  for (const v of Object.values(rec)) {
+    const found = deepGet(v, target);
+    if (found) return found;
+  }
+}
+
+server.tool(
+  "search_deals",
+  "Search YC Bookface deals by keyword and/or category tag. Returns matching deals with company name, description, tags, and deal ID for use with get_deal.",
+  {
+    query: z
+      .string()
+      .default("")
+      .describe("Text search query (leave empty to browse all deals)"),
+    tag: z
+      .string()
+      .optional()
+      .describe(
+        "Filter by deal category tag, e.g. 'Cloud Services', 'Developer Tools', 'Lead Generation', 'Design', 'Finance'"
+      ),
+    limit: z
+      .number()
+      .default(20)
+      .describe("Max results to return (default 20, max 100)"),
+  },
+  async ({ query, tag, limit }) => {
+    let algoliaKey: string;
+    try {
+      algoliaKey = await getAlgoliaKey();
+    } catch (err) {
+      return error(
+        `Failed to get search credentials: ${err instanceof Error ? err.message : err}`
+      );
+    }
+
+    const facetFilters = tag
+      ? JSON.stringify([[`deal_tags:${tag}`]])
+      : "";
+    const params = [
+      `query=${encodeURIComponent(query)}`,
+      `hitsPerPage=${Math.min(limit, 100)}`,
+      `page=0`,
+      `facets=${encodeURIComponent(JSON.stringify(["deal_tags", "audience"]))}`,
+      `maxValuesPerFacet=1000`,
+      facetFilters
+        ? `facetFilters=${encodeURIComponent(facetFilters)}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("&");
+
+    const body = JSON.stringify({
+      requests: [{ indexName: "Deal_production", params }],
+      apiKey: algoliaKey,
+    });
+
+    const searchRes = await fetch(ALGOLIA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+
+    if (!searchRes.ok) {
+      algoliaKeyCache = null; // key may have expired
+      const text = await searchRes.text();
+      return error(`Algolia search failed (${searchRes.status}): ${text.slice(0, 300)}`);
+    }
+
+    const data = (await searchRes.json()) as any;
+    const result = data.results?.[0];
+    const hits: any[] = result?.hits ?? [];
+    const facets = result?.facets?.deal_tags ?? {};
+
+    const deals = hits.map((h: any) => ({
+      id: h.objectID ?? h.id,
+      company: h.company_name ?? h.name,
+      title: h.title,
+      description: (h.description ?? "").slice(0, 300),
+      tags: h.deal_tags,
+      url: `${BOOKFACE_BASE}/deals/${h.objectID ?? h.id}`,
+    }));
+
+    const out: Record<string, unknown> = {
+      total: result?.nbHits ?? deals.length,
+      deals,
+    };
+    // Include available tags when browsing (no tag filter set)
+    if (!tag && Object.keys(facets).length > 0) {
+      out.available_tags = Object.entries(facets)
+        .sort(([, a], [, b]) => (b as number) - (a as number))
+        .slice(0, 30)
+        .map(([name, count]) => `${name} (${count})`);
+    }
+
+    return ok(JSON.stringify(out, null, 2));
+  }
+);
+
+// ── get_deal ──────────────────────────────────────────────────────────────
+
+server.tool(
+  "get_deal",
+  "Get full details of a YC Bookface deal by ID, including redemption instructions and terms",
+  {
+    deal_id: z.number().describe("The numeric deal ID (e.g. 459)"),
+  },
+  async ({ deal_id }) => {
+    const res = await authedFetch(`${BOOKFACE_BASE}/deals/${deal_id}.json`, {
+      headers: { Referer: `${BOOKFACE_BASE}/deals/${deal_id}` },
+    });
+    if (!res.ok) return error(`Fetch deal failed (${res.status})`);
+    const data = (await res.json()) as any;
+    const d = data.deal ?? data;
+    return ok(
+      JSON.stringify(
+        {
+          id: d.id,
+          company_name: d.company_name,
+          title: d.title,
+          description: d.description,
+          redemption_notes: d.redemption_notes,
+          url: d.url ?? d.website_url,
+          tags: d.deal_tags ?? d.tags,
+          audience: d.audience,
+          logo_url: d.logo_url,
+          active: d.active,
+        },
+        null,
+        2
+      )
+    );
+  }
+);
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function ok(text: string) {
