@@ -26,9 +26,9 @@ Get cookies from DevTools → Application → Cookies on `messages.ycombinator.c
 |------|-------------|
 | `create_chat` | Create a new Bookface agent chat thread, optionally with an opening message |
 | `send_message` | Send a message to an existing chat thread (fire-and-forget) |
-| `send_and_wait` | Send a message and poll until the agent replies (default 120s timeout, 3s interval). Use this when you need the response. |
+| `send_and_wait` | Send a message and poll until the agent replies (PRIMARY tool for chatting) |
 | `get_new_messages` | Poll for new messages for the authenticated user |
-| `get_chat_history` | Get messages for a thread (supports `last_n` limit) |
+| `get_chat_history` | Get chat messages for a thread (supports `last_n` limit) |
 | `get_thread` | Get metadata for a specific thread |
 | `mark_read` | Mark messages as read in a thread |
 | `get_suggested_prompts` | Fetch suggested agent prompts from the new chat screen |
@@ -44,6 +44,7 @@ Get cookies from DevTools → Application → Cookies on `messages.ycombinator.c
 | Tool | Description |
 |------|-------------|
 | `get_post` | Fetch a Bookface post by ID, including comments |
+| `search_forum` | **Search the forum for posts by keyword, tag, or author. Returns post ID, title, author, and preview.** |
 | `get_knowledge` | Fetch a knowledge base article by slug |
 
 ### Deals
