@@ -12,7 +12,9 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// ── create_chat ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// create_chat
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "create_chat",
@@ -57,7 +59,9 @@ server.tool(
   }
 );
 
-// ── create_chat_and_wait ──────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// create_chat_and_wait
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "create_chat_and_wait",
@@ -141,7 +145,9 @@ server.tool(
   }
 );
 
-// ── send_message ────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// send_message
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "send_message",
@@ -173,7 +179,9 @@ server.tool(
   }
 );
 
-// ── send_and_wait ─────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// send_and_wait
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "send_and_wait",
@@ -267,7 +275,9 @@ server.tool(
   }
 );
 
-// ── get_new_messages ────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_new_messages
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_new_messages",
@@ -288,7 +298,9 @@ server.tool(
   }
 );
 
-// ── get_chat_history ────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_chat_history
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_chat_history",
@@ -316,7 +328,9 @@ server.tool(
   }
 );
 
-// ── get_thread ──────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_thread
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_thread",
@@ -333,7 +347,9 @@ server.tool(
   }
 );
 
-// ── get_suggested_prompts ───────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_suggested_prompts
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_suggested_prompts",
@@ -356,7 +372,9 @@ server.tool(
   }
 );
 
-// ── mark_read ───────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// mark_read
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "mark_read",
@@ -375,7 +393,9 @@ server.tool(
   }
 );
 
-// ── get_current_user ────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_current_user
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_current_user",
@@ -390,7 +410,9 @@ server.tool(
   }
 );
 
-// ── get_post ─────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_post
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_post",
@@ -425,7 +447,91 @@ server.tool(
   }
 );
 
-// ── get_knowledge ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// search_forum
+// ═════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "search_forum",
+  "Search the Bookface forum for posts by keyword. Returns matching posts with title, author, content preview, and post ID for use with get_post.",
+  {
+    query: z
+      .string()
+      .default("")
+      .describe("Search query text (leave empty to browse recent posts)"),
+    tag: z
+      .string()
+      .optional()
+      .describe("Filter by post tag/category"),
+    author: z
+      .string()
+      .optional()
+      .describe("Filter by author name or username"),
+    limit: z
+      .number()
+      .default(20)
+      .describe("Max results to return (default 20, max 100)"),
+  },
+  async ({ query, tag, author, limit }) => {
+    // Build query parameters
+    const params: Record<string, string> = {};
+    
+    if (query) {
+      params.q = query;
+    }
+    if (tag) {
+      params.tag = tag;
+    }
+    if (author) {
+      params.author = author;
+    }
+    params.limit = Math.min(limit, 100).toString();
+
+    // Construct URL with query string
+    const queryString = new URLSearchParams(params).toString();
+    const url = `${BOOKFACE_BASE}/posts/search.json${queryString ? `?${queryString}` : ""}`;
+
+    const res = await authedFetch(url, {
+      headers: { Referer: `${BOOKFACE_BASE}/posts` },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      return error(`Forum search failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+
+    const data = await res.json() as any;
+    const rawPosts: any[] = data.posts ?? data.results ?? (Array.isArray(data) ? data : []);
+    
+    if (!Array.isArray(rawPosts) || rawPosts.length === 0) {
+      return ok(JSON.stringify({ total: 0, posts: [] }, null, 2));
+    }
+
+    // Map and limit results
+    const posts = rawPosts.slice(0, Math.min(limit, 100)).map((p) => ({
+      id: p.id,
+      title: p.title,
+      body: typeof p.body === "string" ? p.body.slice(0, 500) : p.body,
+      author: p.user?.full_name ?? p.author_name ?? "Unknown",
+      company: p.user?.byline_company?.name ?? p.company_name,
+      created_at: p.created_at,
+      upvotes: p.vote_info?.count ?? p.upvotes_count ?? 0,
+      tags: p.tags ?? p.post_tags,
+      url: `${BOOKFACE_BASE}/posts/${p.id}`,
+    }));
+
+    const out = {
+      total: data.total ?? rawPosts.length,
+      posts,
+    };
+
+    return ok(JSON.stringify(out, null, 2));
+  }
+);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// get_knowledge
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_knowledge",
@@ -442,7 +548,7 @@ server.tool(
     const data = await res.json() as any;
     // Knowledge articles can be large — trim each post to key fields
     const posts: any[] = data.posts ?? data.knowledge_posts ?? (Array.isArray(data) ? data : [data]);
-    const out = posts.map((p: any) => ({
+    const out = posts.map((p) => ({
       id: p.id,
       title: p.title,
       body: typeof p.body === "string" ? p.body.slice(0, 2000) : p.body,
@@ -454,9 +560,11 @@ server.tool(
   }
 );
 
-// ── Algolia deals search ──────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Algolia deals search
+// ═════════════════════════════════════════════════════════════════════════════
 
-const ALGOLIA_APP_ID = "45BWZJ1SGC";
+const ALGOLIA_APP_ID = "45BWZ1SGC";
 const ALGOLIA_URL = `https://${ALGOLIA_APP_ID.toLowerCase()}-dsn.algolia.net/1/indexes/*/queries?x-algolia-application-id=${ALGOLIA_APP_ID}`;
 
 let algoliaKeyCache: { key: string; ts: number } | null = null;
@@ -512,7 +620,7 @@ async function getAlgoliaKey(): Promise<string> {
   // Key assignment in script tags
   if (!key) {
     const m = body.match(
-      /["'](?:algolia[A-Za-z]*Key|apiKey|searchKey)["']\s*[=:]\s*["']([A-Za-z0-9+/=]{100,})["']/i
+      /['"](?:algolia[A-Za-z]*Key|apiKey|searchKey)['"]\s*[:=]\s*['"]([A-Za-z0-9+/=]{100,})['"]/i
     );
     if (m) key = m[1];
   }
@@ -610,7 +718,7 @@ server.tool(
     const hits: any[] = result?.hits ?? [];
     const facets = result?.facets?.deal_tags ?? {};
 
-    const deals = hits.map((h: any) => ({
+    const deals = hits.map((h) => ({
       id: h.objectID ?? h.id,
       company: h.company_name ?? h.name,
       title: h.title,
@@ -635,7 +743,9 @@ server.tool(
   }
 );
 
-// ── get_deal ──────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// get_deal
+// ═════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "get_deal",
@@ -671,7 +781,9 @@ server.tool(
   }
 );
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═════════════════════════════════════════════════════════════════════════════
 
 function ok(text: string) {
   return { content: [{ type: "text" as const, text }] };
@@ -681,7 +793,9 @@ function error(text: string) {
   return { content: [{ type: "text" as const, text }], isError: true };
 }
 
-// ── Start ───────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Start
+// ═════════════════════════════════════════════════════════════════════════════
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
